@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ## AutoAttend
 
 ### Local Development
@@ -55,3 +56,6 @@ Notes:
 ### Notes
 
 	`MOCHA_USERS_SERVICE_API_URL` and `MOCHA_USERS_SERVICE_API_KEY` values in `.dev.vars`.
+=======
+# Attendance-Sys
+>>>>>>> attendance-sys/main
