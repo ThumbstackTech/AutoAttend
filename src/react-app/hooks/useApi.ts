@@ -3,7 +3,7 @@ import type { EmployeeWithDetails, AttendanceRecordWithEmployee, AttendanceStats
 
 // Allow overriding API base for production deployments (e.g. Cloudflare Worker URL)
 // Set VITE_API_BASE in your environment (.env, .dev.vars via plugin, or host config)
-const API_BASE = (import.meta as any)?.env?.VITE_API_BASE ? String((import.meta as any).env.VITE_API_BASE) : '';
+const API_BASE = (import.meta as any)?.env?.VITE_API_BASE ? String((import.meta as any).env.VITE_API_BASE) : 'https://019a4ead-1cfb-71c4-914c-dc2317d59ceb.thumbstack-autoattend.workers.dev';
 
 export function useEmployees() {
   const [employees, setEmployees] = useState<EmployeeWithDetails[]>([]);
