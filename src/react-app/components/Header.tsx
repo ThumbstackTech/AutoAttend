@@ -30,12 +30,12 @@ export default function Header() {
         <div className="flex items-center justify-between h-16">
           {/* Logo and Brand */}
           <div className="flex items-center space-x-4">
-            <img
-              src="/Tlogo.png"
-              alt="AutoAttend logo"
-              className="w-9 h-9 rounded-lg shadow-sm object-contain"
-              draggable={false}
-            />
+            <div
+              aria-label="AutoAttend Logo"
+              className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-white text-xs font-bold"
+            >
+              AA
+            </div>
             <div>
               <h1 className="text-xl font-bold text-transparent bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text">
                 AutoAttend

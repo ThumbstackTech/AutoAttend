@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { cors } from "hono/cors";
 import { getCookie, setCookie } from "hono/cookie";
@@ -16,7 +17,30 @@ type Env = {
 };
 
 const AUTH_COOKIE = "AA_AUTH";
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const COMPANY_UUID = 'D7E1A3F4';
+
+type AuthenticatedUser = {
+  id: number;
+  username: string;
+  email: string | null;
+  role: string;
+  must_change_password: number;
+};
+
+type AppVariables = {
+  user: AuthenticatedUser;
+};
+
+function toClientUser(user: { id: number; username: string; email: string | null; role: string; must_change_password: number }) {
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    mustChangePassword: Boolean(user.must_change_password),
+  };
+}
 
 type EmployeeRow = {
   id: number;
@@ -49,53 +73,210 @@ type EmployeeWithDetailsRow = {
   details_updated_at: string | null;
 };
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
+
+async function sha256Hex(input: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  const bytes = Array.from(new Uint8Array(digest));
+  return bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashPassword(password: string, salt?: string): Promise<{ hash: string; salt: string }> {
+  const actualSalt = salt ?? crypto.randomUUID().replace(/-/g, "");
+  const hash = await sha256Hex(actualSalt + password);
+  return { hash, salt: actualSalt };
+}
+
+async function verifyPassword(password: string, salt: string, expectedHash: string): Promise<boolean> {
+  const { hash } = await hashPassword(password, salt);
+  return hash === expectedHash;
+}
+
+function generateSessionToken(): string {
+  return crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+}
+
+function isSecureRequest(c: Context): boolean {
+  try {
+    const url = new URL(c.req.url);
+    return url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+async function getAuthenticatedUserFromCookie(c: Context<{ Bindings: Env; Variables: AppVariables }>): Promise<AuthenticatedUser | null> {
+  const token = getCookie(c, AUTH_COOKIE);
+  if (!token) {
+    return null;
+  }
+  const db = c.env.DB;
+  const session = await db.prepare(
+    `SELECT s.token, s.expires_at, u.id, u.username, u.email, u.role, u.must_change_password
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.token = ?
+     LIMIT 1`
+  ).bind(token).first<{
+    token: string;
+    expires_at: string;
+    id: number;
+    username: string;
+    email: string | null;
+    role: string;
+    must_change_password: number;
+  }>();
+
+  if (!session) {
+    return null;
+  }
+
+  const now = Date.now();
+  if (new Date(session.expires_at).getTime() < now) {
+    await db.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
+    return null;
+  }
+
+  const extendedExpiry = new Date(now + SESSION_TTL_SECONDS * 1000).toISOString();
+  await db.prepare(`UPDATE sessions SET expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE token = ?`).bind(extendedExpiry, token).run();
+
+  return {
+    id: session.id,
+    username: session.username,
+    email: session.email,
+    role: session.role,
+    must_change_password: session.must_change_password,
+  };
+}
 
 // Enable CORS for ESP32 requests
 app.use("/api/*", cors());
 
 // Simple auth middleware and endpoints
-const authMiddleware: import('hono').MiddlewareHandler = async (c, next) => {
-  const token = getCookie(c, AUTH_COOKIE);
-  if (token === 'admin-token') {
-    c.set('user', { username: 'Admin', role: 'admin' });
-    return next();
+const authMiddleware: MiddlewareHandler<{ Bindings: Env; Variables: AppVariables }> = async (c, next) => {
+  const user = await getAuthenticatedUserFromCookie(c);
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
   }
-  return c.json({ error: 'Unauthorized' }, 401);
+  c.set('user', user);
+  await next();
 };
 
 app.post('/api/login', async (c) => {
-  const { username, password } = await c.req.json().catch(() => ({ username: '', password: '' }));
-  if (username === 'Admin' && password === 'Pass@123') {
-    setCookie(c, AUTH_COOKIE, 'admin-token', {
-      httpOnly: true,
-      path: '/',
-      sameSite: 'lax',
-      secure: false, // set to true behind HTTPS in production
-      maxAge: 7 * 24 * 60 * 60,
-    });
-    return c.json({ success: true, user: { username: 'Admin', role: 'admin' } });
+  const body = await c.req.json().catch(() => ({} as Record<string, string>));
+  const identifier = (body.identifier ?? body.username ?? '').trim();
+  const password = (body.password ?? '').trim();
+
+  if (!identifier || !password) {
+    return c.json({ error: 'Username/email and password are required' }, 400);
   }
-  return c.json({ error: 'Invalid credentials' }, 401);
+
+  const normalized = identifier.toLowerCase();
+  const db = c.env.DB;
+  const user = await db.prepare(
+    `SELECT id, username, email, role, must_change_password, password_hash, password_salt
+     FROM users
+     WHERE LOWER(username) = ? OR LOWER(email) = ?
+     LIMIT 1`
+  ).bind(normalized, normalized).first<{
+    id: number;
+    username: string;
+    email: string | null;
+    role: string;
+    must_change_password: number;
+    password_hash: string;
+    password_salt: string;
+  }>();
+
+  if (!user) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const valid = await verifyPassword(password, user.password_salt, user.password_hash);
+  if (!valid) {
+    return c.json({ error: 'Invalid credentials' }, 401);
+  }
+
+  const token = generateSessionToken();
+  const expiresAt = new Date(Date.now() + SESSION_TTL_SECONDS * 1000).toISOString();
+  await db.prepare(`INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`)
+    .bind(token, user.id, expiresAt)
+    .run();
+
+  setCookie(c, AUTH_COOKIE, token, {
+    httpOnly: true,
+    path: '/',
+    sameSite: 'lax',
+    secure: isSecureRequest(c),
+    maxAge: SESSION_TTL_SECONDS,
+  });
+
+  return c.json({
+    success: true,
+    user: toClientUser(user),
+  });
 });
 
 app.get('/api/auth/me', async (c) => {
-  const token = getCookie(c, AUTH_COOKIE);
-  if (token === 'admin-token') {
-    return c.json({ username: 'Admin', role: 'admin' });
+  const user = await getAuthenticatedUserFromCookie(c);
+  if (!user) {
+    return c.json({ error: 'Unauthorized' }, 401);
   }
-  return c.json({ error: 'Unauthorized' }, 401);
+  return c.json(toClientUser(user));
 });
 
 app.get('/api/logout', async (c) => {
+  const token = getCookie(c, AUTH_COOKIE);
+  if (token) {
+    await c.env.DB.prepare(`DELETE FROM sessions WHERE token = ?`).bind(token).run();
+  }
   setCookie(c, AUTH_COOKIE, '', {
     httpOnly: true,
     path: '/',
     sameSite: 'lax',
-    secure: false,
+    secure: isSecureRequest(c),
     maxAge: 0,
   });
   return c.json({ success: true }, 200);
+});
+
+app.post('/api/account/password', authMiddleware, async (c) => {
+  const body = await c.req.json().catch(() => ({} as Record<string, string>));
+  const currentPassword = (body.currentPassword ?? '').trim();
+  const newPassword = (body.newPassword ?? '').trim();
+
+  if (!currentPassword || !newPassword) {
+    return c.json({ error: 'Current and new passwords are required' }, 400);
+  }
+
+  if (newPassword.length < 8) {
+    return c.json({ error: 'New password must be at least 8 characters long' }, 400);
+  }
+
+  const user = c.get('user');
+  const dbUser = await c.env.DB.prepare(`SELECT password_hash, password_salt FROM users WHERE id = ? LIMIT 1`)
+    .bind(user.id)
+    .first<{ password_hash: string; password_salt: string }>();
+
+  if (!dbUser) {
+    return c.json({ error: 'User not found' }, 404);
+  }
+
+  const isCurrentValid = await verifyPassword(currentPassword, dbUser.password_salt, dbUser.password_hash);
+  if (!isCurrentValid) {
+    return c.json({ error: 'Current password is incorrect' }, 400);
+  }
+
+  const { hash, salt } = await hashPassword(newPassword);
+  await c.env.DB.prepare(`
+    UPDATE users
+    SET password_hash = ?, password_salt = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).bind(hash, salt, user.id).run();
+
+  return c.json({ success: true });
 });
 
 // Helper function to convert hex to string (employee name)
@@ -572,7 +753,32 @@ app.post("/api/esp32/detect", zValidator("json", ESP32DetectionSchema), async (c
   const status: 'checkin' | 'checkout' = (action === 'checkout' ? 'checkout' : 'checkin');
   const now = new Date();
 
-  // Dedupe: ignore if a same-status event exists in last 60 seconds
+  // Check the employee's most recent attendance record (regardless of time)
+  const lastRecord = await db.prepare(`
+    SELECT status FROM attendance_records 
+    WHERE employee_id = ? 
+    ORDER BY recorded_at DESC LIMIT 1
+  `).bind(employee.id).first<{ status: string }>();
+
+  // Block consecutive check-ins: if last record was check-in and new request is also check-in, reject
+  if (lastRecord && lastRecord.status === 'checkin' && status === 'checkin') {
+    return c.json({ 
+      success: false, 
+      error: "Duplicate check-in blocked",
+      message: `Employee ${employee.name} is already checked in. Please checkout first.`
+    }, 400);
+  }
+
+  // Block consecutive checkouts: if last record was checkout and new request is also checkout, reject
+  if (lastRecord && lastRecord.status === 'checkout' && status === 'checkout') {
+    return c.json({ 
+      success: false, 
+      error: "Duplicate checkout blocked",
+      message: `Employee ${employee.name} is already checked out. Please checkin first.`
+    }, 400);
+  }
+
+  // Additional dedupe: ignore if a same-status event exists in last 60 seconds (for rapid duplicates)
   const recent = await db.prepare(`
     SELECT id FROM attendance_records 
     WHERE employee_id = ? AND status = ? 

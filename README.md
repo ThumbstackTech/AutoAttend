@@ -1,27 +1,33 @@
+<<<<<<< HEAD
 ## AutoAttend
 
 ### Local Development
 
-1. Install dependencies
+1) Install dependencies
 ```
 npm install
 ```
 
-2. Apply D1 migrations (run `--local` when developing locally, omit it to target the remote database)
+2) Apply local D1 migrations (first time or after schema changes)
 ```
-npx wrangler d1 migrations apply autoattend-db --local
+npx wrangler d1 migrations apply 019a4ead-1cfb-71c4-914c-dc2317d59ceb --local
 ```
 
-3. Configure authentication (optional)
+3) Configure local env for the Worker (optional but required for login)
 
-The Worker ships with a built-in admin account (`Admin` / `Pass@123`) and does **not** require any external Mocha services or API keys. If you choose to override credentials or add other settings, place them in `.dev.vars` and read them inside the Worker.
+Create a `.dev.vars` file in the project root (already scaffolded) and set:
+```
+MOCHA_USERS_SERVICE_API_URL=<your-mocha-users-service-url>
+MOCHA_USERS_SERVICE_API_KEY=<your-api-key>
+```
 
-4. Start the dev server (Vite + Cloudflare Worker)
+4) Start the dev server (Vite + Cloudflare Worker)
 ```
 npm run dev
 ```
 
-### ESP32 Integration
+
+## ESP32 Integration
 
 The ESP32 scanner posts detections directly to the Worker API.
 
@@ -47,7 +53,9 @@ Notes:
 - The server dedupes repeating events of the same type within 60 seconds and returns `{ success: true, deduped: true }`.
 - Stats consider someone “present” if they have a check-in with no later checkout on the same day.
 
-### Environment Notes
+### Notes
 
-- No third-party auth secrets are required out of the box.
-- If you introduce additional configuration (e.g., custom credentials, OTA signing keys), add them to `.dev.vars` for local dev and `wrangler secret put` when deploying.
+	`MOCHA_USERS_SERVICE_API_URL` and `MOCHA_USERS_SERVICE_API_KEY` values in `.dev.vars`.
+=======
+# Attendance-Sys
+>>>>>>> attendance-sys/main

@@ -27,13 +27,11 @@ export default function LoginPage() {
         {/* Header Section */}
         <div className="mb-8 text-center">
           <div className="flex items-center justify-center mb-6">
-            <div className="p-2 bg-white rounded-2xl shadow-xl">
-              <img
-                src="/Tlogo.png"
-                alt="AutoAttend logo"
-                className="w-16 h-16 object-contain"
-                draggable={false}
-              />
+            <div
+              aria-label="AutoAttend Logo"
+              className="flex items-center justify-center w-16 h-16 text-2xl font-bold text-white shadow-lg rounded-2xl bg-gradient-to-br from-blue-600 to-purple-600"
+            >
+              AA
             </div>
           </div>
           <h1 className="mb-2 text-4xl font-bold text-transparent bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text">
