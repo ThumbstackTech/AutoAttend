@@ -2,7 +2,6 @@
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <cstdio>
@@ -14,8 +13,8 @@
 const char* TARGET_UUID = "D7E1A3F4";
 
 // --- CONFIG: Update these for your network & AutoAttend server ---
- //const char* WIFI_SSID = "Airtel_mayu_7965";
- //const char* WIFI_PASS = "Air@52077";
+// const char* WIFI_SSID = "Airtel_mayu_7965";
+// const char* WIFI_PASS = "Air@52077";
 
 // const char* WIFI_SSID = "Ruchi Salaskar";
 // const char* WIFI_PASS = "tjou1662";
@@ -25,9 +24,10 @@ const char* TARGET_UUID = "D7E1A3F4";
 
 const char* WIFI_SSID = "Zoo_Studio_2.4";
 const char* WIFI_PASS = "Trh@1234";
-// IMPORTANT: Production worker URL from Cloudflare deployment
-// Update this after each deployment or use your custom domain
-const char* SERVER_HOST = "auto.thumbstack-autoattend.workers.dev"; 
+// IMPORTANT: set this to the machine running the dev server (same network)
+// Example if your laptop's IP is 192.168.1.50 and Vite dev uses 5175:
+//   http://192.168.1.50:5175
+const char* SERVER_HOST = "http://192.168.2.177:5175"; 
 const char* SERVER_ENDPOINT = "/api/esp32/detect"; // Worker endpoint (hex only)
 // OTA endpoints
 const char* OTA_MANIFEST_PATH = "/api/ota/manifest"; // returns JSON manifest
@@ -36,10 +36,6 @@ static const char* CURRENT_FIRMWARE_VERSION = "1.0.0";
 // How often to check for updates (seconds)
 static const uint32_t OTA_CHECK_INTERVAL_SECONDS = 600; // 10 minutes
 static uint32_t nextOtaCheck = 0;
-
-// Forward declarations for OTA helpers used later in the file
-void checkForOtaUpdate();
-bool applyFirmware(const String &path, const String &newVersion);
 
 // How long to ignore repeat POSTs for the same event (seconds)
 const uint32_t SEEN_TTL_SECONDS = 10;
@@ -130,15 +126,9 @@ void sendHexToServerWithAction(const std::string &hexValue, const char* action) 
       continue;
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+  String url = String(SERVER_HOST) + String(SERVER_ENDPOINT);
     HTTPClient http;
-    if (!http.begin(client, SERVER_HOST, 443, SERVER_ENDPOINT, true)) {
-      Serial.println("❌ Failed to initialize HTTPS client");
-      retries++;
-      delay(500);
-      continue;
-    }
+    http.begin(url);
     http.addHeader("Content-Type", "application/json");
   // Build payload {"hex_value":"...", "action":"checkin|checkout"}
   String payload = String("{\"hex_value\":\"") + String(hexValue.c_str()) + String("\",\"action\":\"") + String(action) + String("\"}");
@@ -226,13 +216,9 @@ void sendServiceDataToServer(const std::string &serviceAscii) {
     return;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
+  String url = String(SERVER_HOST) + String(SERVER_ENDPOINT);
   HTTPClient http;
-  if (!http.begin(client, SERVER_HOST, 443, SERVER_ENDPOINT, true)) {
-    Serial.println("WiFi HTTPS init failed; cannot POST service data");
-    return;
-  }
+  http.begin(url);
   http.addHeader("Content-Type", "application/json");
  
   // Determine hex to send
@@ -508,7 +494,7 @@ void loop() {
   delay(4000);  // 4 second delay + 2 second scan = ~6 second total cycle
 
   // OTA periodic check
-  nowSec = millis() / 1000;
+  uint32_t nowSec = millis() / 1000;
   if (WiFi.status() == WL_CONNECTED && nowSec >= nextOtaCheck) {
     nextOtaCheck = nowSec + OTA_CHECK_INTERVAL_SECONDS;
     checkForOtaUpdate();
@@ -518,13 +504,9 @@ void loop() {
 // ----------------------- OTA Support -----------------------
 void checkForOtaUpdate() {
   Serial.println("\n🔄 Checking OTA manifest...");
-  WiFiClientSecure client;
-  client.setInsecure();
+  String url = String(SERVER_HOST) + String(OTA_MANIFEST_PATH);
   HTTPClient http;
-  if (!http.begin(client, SERVER_HOST, 443, OTA_MANIFEST_PATH, true)) {
-    Serial.println("⚠️ Unable to start HTTPS connection for OTA manifest");
-    return;
-  }
+  http.begin(url);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("⚠️ OTA manifest fetch failed code=%d\n", code);
@@ -559,25 +541,20 @@ void checkForOtaUpdate() {
       key = json.substring(kQuoteStart + 1, kQuoteEnd);
     }
   }
-  String downloadPath;
+  String downloadUrl;
   if (key.length() > 0) {
-    downloadPath = String("/api/ota/download?key=") + key;
+    downloadUrl = String(SERVER_HOST) + String("/api/ota/download?key=") + key;
   } else {
     // fallback to manifest-based download (no key param)
-    downloadPath = String("/api/ota/download");
+    downloadUrl = String(SERVER_HOST) + String("/api/ota/download");
   }
-  applyFirmware(downloadPath, remoteVersion);
+  applyFirmware(downloadUrl, remoteVersion);
 }
 
-bool applyFirmware(const String &path, const String &newVersion) {
-  Serial.printf("📥 Downloading firmware from https://%s%s\n", SERVER_HOST, path.c_str());
-  WiFiClientSecure client;
-  client.setInsecure();
+bool applyFirmware(const String &url, const String &newVersion) {
+  Serial.printf("📥 Downloading firmware from %s\n", url.c_str());
   HTTPClient http;
-  if (!http.begin(client, SERVER_HOST, 443, path, true)) {
-    Serial.println("❌ Unable to initialize HTTPS client for firmware download");
-    return false;
-  }
+  http.begin(url);
   int code = http.GET();
   if (code != 200) {
     Serial.printf("❌ Firmware download failed code=%d\n", code);
